@@ -1,8 +1,19 @@
+import json
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from ..extensions import mongo
 
 webhook = Blueprint('Webhook', __name__, url_prefix='/webhook')
+
+
+def _safe_json():
+    """Parse request body as JSON; never raise. Returns dict."""
+    try:
+        raw = request.get_data(as_text=True) or "{}"
+        return json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return {}
+
 
 def format_timestamp(dt):
     """Format datetime to '1st April 2021 - 9:30 PM UTC' format"""
@@ -44,56 +55,47 @@ def format_timestamp(dt):
 @webhook.route('/receiver', methods=["POST", "GET"])
 def receiver():
     """
-    GitHub webhook receiver endpoint.
-    Always returns 200 for valid GitHub requests so delivery never fails with 400.
+    GitHub webhook receiver. NEVER returns 4xx/5xx so GitHub delivery always succeeds.
     """
-    # GET: allow health checks / manual visits to return 200
-    if request.method == "GET":
-        return jsonify({"message": "Webhook receiver is active. Use POST with X-GitHub-Event header."}), 200
-
-    # Parse JSON body - use force=True so we accept even if Content-Type is wrong
     try:
-        data = request.get_json(silent=True, force=True) or {}
-    except Exception:
-        data = {}
+        if request.method == "GET":
+            return jsonify({"message": "Webhook OK", "status": "active"}), 200
 
-    event_type = (request.headers.get("X-GitHub-Event") or "").strip()
+        data = _safe_json()
+        event_type = (request.headers.get("X-GitHub-Event") or "").strip()
 
-    # Ping: GitHub sends this when webhook is created - MUST return 200
-    if event_type.lower() == "ping":
-        return jsonify({"message": "Webhook configured successfully", "zen": data.get("zen", "")}), 200
+        if event_type.lower() == "ping":
+            return jsonify({"message": "pong", "zen": data.get("zen", "")}), 200
 
-    # No event type: treat as unknown but still return 200 so GitHub doesn't retry
-    if not event_type:
-        return jsonify({"message": "No X-GitHub-Event header; request ignored"}), 200
+        if not event_type:
+            return jsonify({"message": "ok"}), 200
 
-    try:
         github_event = event_type.lower()
-        action = None
         ts = format_timestamp(datetime.utcnow())
         event = {
-            "request_id": None,
+            "request_id": "",
             "author": "Unknown",
             "action": None,
             "from_branch": "",
             "to_branch": "",
             "timestamp": ts,
         }
+        action = None
 
         if github_event == "push":
             action = "PUSH"
             event["request_id"] = (
                 data.get("after")
-                or data.get("head_commit", {}).get("id")
-                or ("push-%s" % ts.replace(" ", "-").replace(":", "-"))
+                or (data.get("head_commit") or {}).get("id")
+                or ("push-%s" % ts.replace(" ", "-").replace(":", "-")[:50])
             )
             commits = data.get("commits") or []
             if commits:
-                author = commits[0].get("author") or {}
+                author = (commits[0] or {}).get("author") or {}
                 event["author"] = (
                     author.get("name")
                     or author.get("username")
-                    or (author.get("email") or "").split("@")[0]
+                    or ((author.get("email") or "").split("@")[0])
                     or "Unknown"
                 )
             if event["author"] == "Unknown":
@@ -111,7 +113,7 @@ def receiver():
             elif pr_action in ("opened", "synchronize", "reopened"):
                 action = "PULL_REQUEST"
             else:
-                return jsonify({"message": "PR event acknowledged", "action": pr_action}), 200
+                return jsonify({"message": "ok", "action": pr_action}), 200
 
             event["action"] = action
             event["request_id"] = str(data.get("number") or "")
@@ -122,17 +124,16 @@ def receiver():
             event["to_branch"] = (pr.get("base") or {}).get("ref") or ""
 
         else:
-            return jsonify({"message": "Event received", "event": github_event}), 200
+            return jsonify({"message": "ok", "event": github_event}), 200
 
-        # Store only if we have at least action and something to identify the event
-        if action and (event["request_id"] or event["author"] != "Unknown"):
-            event["request_id"] = event["request_id"] or ("%s-%s" % (action.lower(), ts.replace(" ", "-").replace(":", "-")))
+        if action:
+            event["request_id"] = event["request_id"] or ("%s-%s" % (action.lower(), ts.replace(" ", "-").replace(":", "-")[:30]))
             try:
                 mongo.db.events.insert_one(event)
             except Exception:
-                pass  # Don't fail the request if DB is down
-        return jsonify({"message": "Event stored successfully", "event": event}), 200
+                pass
+        return jsonify({"message": "Event stored", "event": event}), 200
 
-    except Exception as e:
-        # Never return 400/500 for GitHub webhook - return 200 so delivery succeeds
-        return jsonify({"message": "Event received", "error": str(e)}), 200
+    except Exception:
+        # Catch-all: never send 400/500 back to GitHub
+        return jsonify({"message": "ok"}), 200
