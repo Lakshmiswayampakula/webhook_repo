@@ -75,7 +75,7 @@ def receiver():
         event = {
             "request_id": "",
             "author": "Unknown",
-            "action": None,
+            "action": "",
             "from_branch": "",
             "to_branch": "",
             "timestamp": ts,
@@ -84,6 +84,7 @@ def receiver():
 
         if github_event == "push":
             action = "PUSH"
+            event["action"] = "PUSH"
             event["request_id"] = (
                 data.get("after")
                 or (data.get("head_commit") or {}).get("id")

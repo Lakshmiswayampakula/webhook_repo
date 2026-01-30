@@ -251,44 +251,48 @@
         let isLoading = false;
 
         function getBadgeClass(action) {
-            const actionLower = action.toLowerCase();
-            if (actionLower === 'push') return 'badge-push';
-            if (actionLower === 'pull_request') return 'badge-pull_request';
-            if (actionLower === 'merge') return 'badge-merge';
+            const a = (action || '').toString().toLowerCase();
+            if (a === 'push') return 'badge-push';
+            if (a === 'pull_request') return 'badge-pull_request';
+            if (a === 'merge') return 'badge-merge';
             return '';
         }
 
         function getCardClass(action) {
-            const actionLower = action.toLowerCase();
-            if (actionLower === 'push') return 'push';
-            if (actionLower === 'pull_request') return 'pull_request';
-            if (actionLower === 'merge') return 'merge';
+            const a = (action || '').toString().toLowerCase();
+            if (a === 'push') return 'push';
+            if (a === 'pull_request') return 'pull_request';
+            if (a === 'merge') return 'merge';
             return '';
         }
 
         function formatAction(action) {
-            if (action === 'PULL_REQUEST') return 'Pull Request';
-            return action.charAt(0) + action.slice(1).toLowerCase();
+            const a = (action || '').toString();
+            if (!a) return 'Event';
+            if (a === 'PULL_REQUEST') return 'Pull Request';
+            return a.charAt(0).toUpperCase() + a.slice(1).toLowerCase();
         }
 
         function createEventCard(event) {
-            const eventId = `${event.request_id}-${event.timestamp}`;
-            if (eventsCache.has(eventId)) {
-                return null; // Skip duplicates
-            }
+            if (!event) return null;
+            const requestId = (event.request_id != null) ? String(event.request_id) : '';
+            const timestamp = (event.timestamp != null) ? String(event.timestamp) : '';
+            const eventId = requestId + '-' + timestamp;
+            if (eventsCache.has(eventId)) return null;
             eventsCache.add(eventId);
 
             const badgeClass = getBadgeClass(event.action);
             const cardClass = getCardClass(event.action);
             const actionLabel = formatAction(event.action);
+            const message = (event.message != null) ? String(event.message) : actionLabel;
 
             return `
                 <div class="event-card ${cardClass}">
                     <div class="event-message">
                         <span class="event-badge ${badgeClass}">${actionLabel}</span>
-                        ${event.message}
+                        ${message}
                     </div>
-                    <div class="event-timestamp">${event.timestamp}</div>
+                    <div class="event-timestamp">${timestamp}</div>
                 </div>
             `;
         }
@@ -305,13 +309,19 @@
                 spinner.style.display = 'block';
                 const response = await fetch(API_URL);
                 
+                const data = await response.json();
+                const events = Array.isArray(data) ? data : (data.events || []);
+
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    throw new Error(data.message || data.error || `HTTP ${response.status}`);
                 }
 
-                const events = await response.json();
-                
-                if (events.length === 0) {
+                const cardsHtml = events
+                    .map(function(event) { return createEventCard(event); })
+                    .filter(function(card) { return card != null; })
+                    .join('');
+
+                if (cardsHtml === '') {
                     eventsList.innerHTML = `
                         <div class="empty-state">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -322,17 +332,7 @@
                         </div>
                     `;
                 } else {
-                    const newEvents = events
-                        .map(event => createEventCard(event))
-                        .filter(card => card !== null)
-                        .join('');
-
-                    if (newEvents) {
-                        eventsList.innerHTML = newEvents + eventsList.innerHTML;
-                    } else if (eventsList.innerHTML.includes('Loading')) {
-                        // First load, show all events
-                        eventsList.innerHTML = events.map(event => createEventCard(event)).join('');
-                    }
+                    eventsList.innerHTML = cardsHtml;
                 }
 
                 status.className = 'status live';
